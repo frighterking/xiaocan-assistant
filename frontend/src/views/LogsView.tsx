@@ -60,6 +60,7 @@ const TASK_LABELS: Record<string, string> = {
   free_order: '订单全额免单券',
   expire_remind: '凭据/JWT到期预警',
   coupon_remind: '卡券/红包到期提醒',
+  dual_rebate_scan: '美团同店双返利扫描',
   dual_rebate_monitor: '美团同店双返利监控',
   meituan_coupon: '美团官方领券打卡',
   meituan_auth: '美团官方扫码授权',
@@ -81,6 +82,7 @@ const STORE_TASK_KEYS = new Set([
   'delay_card',
   'delay_voucher',
   'order_bind',
+  'dual_rebate_scan',
 ]);
 
 export const LogsView: React.FC = () => {
@@ -471,8 +473,6 @@ export const LogsView: React.FC = () => {
           max-height: var(--table-scroll-y) !important;
           overflow-y: auto !important;
           contain: content;
-          will-change: transform;
-          transform: translateZ(0);
           -webkit-overflow-scrolling: touch;
         }
         .logs-table-container .semi-table-row-cell-fixed-right,

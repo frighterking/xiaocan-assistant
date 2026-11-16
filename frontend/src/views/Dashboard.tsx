@@ -265,6 +265,14 @@ export const Dashboard: React.FC = () => {
       });
       if (res.ok) {
         setPendingOrders(res.orders || []);
+        // 订单列表接口会同步最新官方订单与红包奖励金额入库，完成后联动回刷一次统计与图表汇总
+        void Promise.all([
+          api.getOrderStats(effectiveKey),
+          api.getDashboardChartData(effectiveKey),
+        ]).then(([stRes, chRes]) => {
+          if (stRes?.ok && stRes.stats) setOrderStats(stRes.stats);
+          if (chRes?.ok && chRes.data) setChartData(chRes.data);
+        }).catch(() => {});
       }
     } catch {
       // 异常捕获
@@ -634,6 +642,7 @@ export const Dashboard: React.FC = () => {
       duration: 0.18,
       ease: 'power1.out',
       overwrite: 'auto',
+      clearProps: 'transform',
     });
   });
 
@@ -839,7 +848,7 @@ export const Dashboard: React.FC = () => {
   return (
     <div ref={dashboardRef} className="w-full h-full min-h-0 flex flex-col overflow-hidden gap-2 sm:gap-2.5">
       {/* 顶部主控账号概览 Card (专业沉稳三段式，色彩收敛，数据聚焦) */}
-      <div className="gsap-card-item shrink-0 bg-semi-color-bg-1 border border-semi-color-border/90 rounded-xl px-4 py-2.5 shadow-xs hover:border-semi-color-primary-light-active transition-colors duration-200 will-change-[transform,opacity] flex items-center justify-between gap-3">
+      <div className="gsap-card-item shrink-0 bg-semi-color-bg-1 border border-semi-color-border/90 rounded-xl px-4 py-2.5 shadow-xs hover:border-semi-color-primary-light-active transition-colors duration-200 flex items-center justify-between gap-3">
         {/* 左侧：主控账号身份与连接状态 */}
         <div className="flex items-center gap-3 min-w-0">
           <div className="relative group cursor-pointer shrink-0" onClick={() => setActiveTab('accounts')}>
@@ -998,7 +1007,7 @@ export const Dashboard: React.FC = () => {
           onMouseEnter={handleBentoEnter}
           onMouseLeave={handleBentoLeave}
           onClick={() => setActiveTab('orders')}
-          className="gsap-bento-card h-full cursor-pointer will-change-transform"
+          className="gsap-bento-card h-full cursor-pointer"
         >
           <Card
             shadows="hover"
@@ -1044,7 +1053,7 @@ export const Dashboard: React.FC = () => {
           onMouseEnter={handleBentoEnter}
           onMouseLeave={handleBentoLeave}
           onClick={() => setActiveTab('orders')}
-          className="gsap-bento-card h-full cursor-pointer will-change-transform"
+          className="gsap-bento-card h-full cursor-pointer"
         >
           <Card
             shadows="hover"
@@ -1090,7 +1099,7 @@ export const Dashboard: React.FC = () => {
           onMouseEnter={handleBentoEnter}
           onMouseLeave={handleBentoLeave}
           onClick={() => setActiveTab('orders')}
-          className="gsap-bento-card h-full cursor-pointer will-change-transform"
+          className="gsap-bento-card h-full cursor-pointer"
         >
           <Card
             shadows="hover"
@@ -1139,7 +1148,7 @@ export const Dashboard: React.FC = () => {
           onMouseEnter={handleBentoEnter}
           onMouseLeave={handleBentoLeave}
           onClick={() => setActiveTab('automation')}
-          className="gsap-bento-card h-full cursor-pointer will-change-transform"
+          className="gsap-bento-card h-full cursor-pointer"
         >
           <Card
             shadows="hover"
@@ -1310,6 +1319,11 @@ export const Dashboard: React.FC = () => {
                               <div className="flex items-center gap-2 mt-1 text-xs text-semi-color-text-2 flex-wrap">
                                 <span className="text-emerald-600 dark:text-emerald-400 font-bold font-mono">
                                   返 ¥{order.rebate_money?.toFixed(2) || '0.00'}
+                                  {Number(order.redpack_reward_num || 0) > 0 && (
+                                    <span className="ml-1 text-semi-color-warning font-semibold">
+                                      +¥{Number(order.redpack_reward_num).toFixed(2)}红包
+                                    </span>
+                                  )}
                                 </span>
                                 <span>门槛 ¥{order.order_money}</span>
                                 <Tag size="small" color={getConditionTagColor(order.condition)}>

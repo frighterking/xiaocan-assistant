@@ -403,7 +403,7 @@ export const OrdersView: React.FC = () => {
       render: (_: any, row?: Order) => {
         const hasRedpack = Boolean(row?.redpack_reward_num && row.redpack_reward_num > 0);
         const redpackAmount = hasRedpack
-          ? ((row!.redpack_reward_num!) > 5 ? (row!.redpack_reward_num!) / 100 : (row!.redpack_reward_num!)).toFixed(2)
+          ? Number(row!.redpack_reward_num!).toFixed(2)
           : null;
         const isPercentOrder =
           row?.order_type === 12 ||
@@ -755,8 +755,6 @@ export const OrdersView: React.FC = () => {
           max-height: var(--table-scroll-y) !important;
           overflow-y: auto !important;
           contain: content;
-          will-change: transform;
-          transform: translateZ(0);
           -webkit-overflow-scrolling: touch;
         }
         .orders-table-container .semi-table-placeholder {

@@ -46,6 +46,7 @@ const TASK_LABELS: Record<string, string> = {
   auto_withdraw: '账户佣金自动提现',
   check_assets: '全资产与明细轮询',
   token_refresh: '多账号鉴权状态巡检',
+  dual_rebate_scan: '美团同店双返利扫描',
   dual_rebate_monitor: '美团同店双返利监控',
   meituan_coupon: '美团官方领券打卡',
   meituan_auth: '美团官方扫码授权'

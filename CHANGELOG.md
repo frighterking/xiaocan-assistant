@@ -5,6 +5,37 @@
 
 ---
 
+## [1.0.6] - 2026-11-16
+
+### 协议对齐与跨事件循环传输层修复 (Protocol & Transport)
+- **基于官方 APK v3.22.2 重构多维正交协议档案池**：
+  - 将默认协议档案升级为 `android_v3222_webview`（搭配 `android_v3222_minimal`、`android_v3222_dart`、`wechat_mini_compat` 组成正交备用矩阵，兼容旧档案自动迁移），剔除 `X-Model: Android Phone` 等易触发风控的非原生冗余请求头。
+  - 将 WAF 403 单飞自愈探测升级为依次遍历剩余正交档案并支持并发同伴请求复用已切换档案。
+- **修复扫码绑定 `asyncio.run()` 导致全局 `curl_cffi` 会话失效 (Issue #22)**：
+  - 在 `_CurlCffiTransport` 与 `_HttpxTransport` 中新增事件循环守卫，检测事件循环切换或关闭时自动重建 `AsyncSession` / `AsyncClient`。
+  - 将 `_waf_failover_locks`、`_rpc_semaphores`、`_rpc_rate_locks` 改为按事件循环隔离的 `WeakKeyDictionary`；`_save_scanned_account_sync` 改用独立临时 `XiaoCanClient()`。
+  - 修复 `/api/store/list` 的 `feed_and_shangjin` 分支静默跳过协程异常的缺陷，全部协程失败时向上返回明确错误提示。
+
+### 金额单位换算与数据看板统计修复 (Issue #22 & Issue #24)
+- **彻底废除阈值猜单位，统一按官方「分」固定换算 (Issue #22)**：
+  - 修复 `list_orders`、`_parse_store_promotion_item`、`execute_grab_for_appointment` 与前端 `OrdersView.tsx` 对 `redpack_reward_num`、`order_money`、`rebate_money`、`orig_rebate` 等字段使用 `>= 100` / `> 5` 启发式猜单位导致的 `0.05 元` 红包显示为 `+¥5.00` 等小额/整百误差。
+- **修复数据看板在途/待入账与累计返利金额统计 (Issue #24)**：
+  - `get_order_stats()` 与 `get_dashboard_chart_data()` 将 `redpack_reward_num` 纳入 `pending_rebate`（在途/待入账金额）、`total_rebate`（累计返利）与图表维度统计。
+  - `Dashboard.tsx` 在待处理订单同步后联动刷新订单统计与图表汇总，并在待处理订单卡片补充展示 `+¥X.XX红包` 明细。
+
+### 选店与运行日志增强 (Store Scan & Logs)
+- **美团同店双返利支持双通道独立范围控制（默认各 300 家）**：
+  - 前端范围控件重构为 Semi Design 二级弹出双下拉面板，支持分别独立设置「实付满返 (Feed)」(`100~800`) 与「按比例返 (赏金)」(`50~500`) 目标家数并独立持久化。
+  - 后端 `/api/store/dual-rebate-scan` 新增 `max_fixed_stores` 与 `max_percent_stores` 参数，两路通道各自独立计数达标即止，解决 Feed 占满名额导致赏金拉取不足的问题。
+- **双返利扫描接入运行日志**：
+  - 每次扫描完成后写入精简结构化日志 (`dual_rebate_scan`)，包含两路请求/去重统计、Feed 最远覆盖距离与店名、赏金最后一轮覆盖店铺名单以及前 50 家命中明细。
+
+### 界面渲染与文字清晰度修复 (UI Rendering, Issue #22)
+- **恢复 Windows Chrome 次像素抗锯齿 (ClearType) 清晰度**：
+  - 覆盖 Semi Design 明暗主题 `--semi-color-text-1/2/3` 为等效不透明 RGB 色彩，移除 `.gsap-card-item`、`Dashboard.tsx` 与 `OrdersView.tsx` 中的静态 `will-change` / `backface-visibility: hidden` 合成层常驻提升，并在 GSAP hover 动画结束后通过 `clearProps: 'transform'` 清理内联样式。
+
+---
+
 ## [1.0.5] - 2026-11-13
 
 ### 协议自愈与风控诊断强化 (Protocol & Anti-WAF)

@@ -13,6 +13,7 @@ import tempfile
 import sys
 import time
 import uuid
+import weakref
 from typing import Any, Dict, List, Optional
 import httpx
 
@@ -26,10 +27,12 @@ except ImportError:
 
 from .signer import (
     DEFAULT_PROTOCOL_PROFILE_ID,
+    LEGACY_PROFILE_ALIAS,
     PROTOCOL_PROFILES,
     generate_headers,
     get_protocol_profile,
     list_protocol_profiles,
+    resolve_protocol_profile_id,
 )
 from ..core import time_service
 
@@ -185,13 +188,131 @@ class _CurlCffiTransport:
                 curl_opts[_CurlOpt.DNS_SERVERS] = dns_servers
                 kwargs["curl_options"] = curl_opts
 
-        self.session = _curl_requests.AsyncSession(**kwargs)
+        self._kwargs = kwargs
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self.session: Any = None
+        try:
+            self._loop = asyncio.get_running_loop()
+            self.session = _curl_requests.AsyncSession(**self._kwargs)
+        except RuntimeError:
+            self._loop = None
+            self.session = None
+
+    async def _ensure_session(self):
+        loop = asyncio.get_running_loop()
+        if (
+            self.session is None
+            or self._loop is None
+            or self._loop is not loop
+            or self._loop.is_closed()
+        ):
+            old_sess = self.session
+            old_loop = self._loop
+            self.session = None
+            self._loop = None
+            if old_sess is not None:
+                if old_loop is loop and not loop.is_closed():
+                    try:
+                        await old_sess.close()
+                    except Exception:
+                        pass
+                elif old_loop is not None and not old_loop.is_closed():
+                    try:
+                        old_loop.call_soon_threadsafe(lambda s=old_sess: asyncio.create_task(s.close()))
+                    except Exception:
+                        pass
+            self.session = _curl_requests.AsyncSession(**self._kwargs)
+            self._loop = loop
+        return self.session
 
     async def post(self, url: str, json: Any = None, headers: Optional[Dict[str, str]] = None):
-        return await self.session.post(url, json=json, headers=headers)
+        sess = await self._ensure_session()
+        return await sess.post(url, json=json, headers=headers)
 
     async def aclose(self) -> None:
-        await self.session.close()
+        old_sess = self.session
+        old_loop = self._loop
+        self.session = None
+        self._loop = None
+        if old_sess is None:
+            return
+        try:
+            cur_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            cur_loop = None
+        if cur_loop is not None and old_loop is cur_loop and not cur_loop.is_closed():
+            await old_sess.close()
+        elif old_loop is not None and not old_loop.is_closed():
+            try:
+                old_loop.call_soon_threadsafe(lambda s=old_sess: asyncio.create_task(s.close()))
+            except Exception:
+                pass
+
+
+class _HttpxTransport:
+    """带事件循环守卫的 httpx 异步传输适配器（当 curl_cffi 未启用时提供跨循环重建保护）"""
+
+    def __init__(self, timeout: float):
+        self.timeout = timeout
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self.session: Optional[httpx.AsyncClient] = None
+
+    async def _ensure_session(self) -> httpx.AsyncClient:
+        loop = asyncio.get_running_loop()
+        if (
+            self.session is None
+            or self._loop is None
+            or self._loop is not loop
+            or self._loop.is_closed()
+            or self.session.is_closed
+        ):
+            old_sess = self.session
+            old_loop = self._loop
+            self.session = None
+            self._loop = None
+            if old_sess is not None and not old_sess.is_closed:
+                if old_loop is loop and not loop.is_closed():
+                    try:
+                        await old_sess.aclose()
+                    except Exception:
+                        pass
+                elif old_loop is not None and not old_loop.is_closed():
+                    try:
+                        old_loop.call_soon_threadsafe(lambda s=old_sess: asyncio.create_task(s.aclose()))
+                    except Exception:
+                        pass
+            self.session = httpx.AsyncClient(
+                http2=True,
+                timeout=self.timeout,
+                follow_redirects=True,
+                limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+                trust_env=False,
+            )
+            self._loop = loop
+        return self.session
+
+    async def post(self, url: str, json: Any = None, headers: Optional[Dict[str, str]] = None):
+        sess = await self._ensure_session()
+        return await sess.post(url, json=json, headers=headers)
+
+    async def aclose(self) -> None:
+        old_sess = self.session
+        old_loop = self._loop
+        self.session = None
+        self._loop = None
+        if old_sess is None or old_sess.is_closed:
+            return
+        try:
+            cur_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            cur_loop = None
+        if cur_loop is not None and old_loop is cur_loop and not cur_loop.is_closed():
+            await old_sess.aclose()
+        elif old_loop is not None and not old_loop.is_closed():
+            try:
+                old_loop.call_soon_threadsafe(lambda s=old_sess: asyncio.create_task(s.aclose()))
+            except Exception:
+                pass
 
 
 def _build_transport(timeout: float, transport_mode: Optional[str] = None):
@@ -211,14 +332,8 @@ def _build_transport(timeout: float, transport_mode: Optional[str] = None):
                 mode,
                 HTTPX_BASELINE_JA3_HASH,
             )
-        # 原生 httpx.AsyncClient, 与改造前逐参数一致
-        return "httpx", httpx.AsyncClient(
-            http2=True,
-            timeout=timeout,
-            follow_redirects=True,
-            limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
-            trust_env=False,
-        )
+        # 原生 httpx 异步传输层 (带事件循环守卫)
+        return "httpx", _HttpxTransport(timeout)
     if mode == "okhttp":
         fingerprint_kwargs: Dict[str, Any] = {
             "ja3": _OKHTTP_JA3,
@@ -289,19 +404,47 @@ _last_waf_block_detail: Optional[Dict[str, Any]] = None
 PROTOCOL_PROFILE_SETTING_KEY = "active_protocol_profile"
 _active_profile_id: Optional[str] = None
 _profile_db_loaded: bool = False
-_waf_failover_lock = asyncio.Lock()
 
-# 全局通信安全流控：防止瞬时并发脉冲击穿腾讯云 WAF 频控阈值
-_RPC_SEMAPHORE = asyncio.Semaphore(2)  # 全局最多允许 2 个并发 RPC 在网关同时执行
-_RPC_RATE_LOCK = asyncio.Lock()
+# 按事件循环隔离的异步并发原语，彻底避免 asyncio.run() 临时循环引发 bound to a different event loop
+_waf_failover_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
+_rpc_semaphores: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+_rpc_rate_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
 _last_rpc_timestamp: float = 0.0
 
 
+def _get_waf_failover_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _waf_failover_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _waf_failover_locks[loop] = lock
+    return lock
+
+
+def _get_rpc_semaphore() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    sem = _rpc_semaphores.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(2)
+        _rpc_semaphores[loop] = sem
+    return sem
+
+
+def _get_rpc_rate_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _rpc_rate_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _rpc_rate_locks[loop] = lock
+    return lock
+
+
 def is_protocol_env_locked() -> bool:
-    """检查是否通过环境变量显式锁定了 UA 或 TLS 指纹，锁定时不自动轮换 Profile"""
+    """检查是否通过环境变量显式锁定了 UA、TLS 指纹或客户端版本号，锁定时不自动轮换 Profile"""
     return bool(
         (os.getenv("XIAOCAN_USER_AGENT") or "").strip()
         or (os.getenv(TLS_IMPERSONATE_ENV) or "").strip()
+        or (os.getenv("XIAOCAN_APP_VERSION") or "").strip()
     )
 
 
@@ -310,13 +453,16 @@ def _summarize_ua(user_agent: Optional[str]) -> str:
     ua = str(user_agent or "").strip()
     if not ua:
         return "unknown"
+    if ua.startswith("Dart/"):
+        return ua.split("(", 1)[0].strip()
     if "MicroMessenger/" in ua:
         m = re.search(r"MicroMessenger/([^\s(]+)", ua)
         ver = m.group(1) if m else "WeChat"
         return f"WeChat-WebView/{ver}"
     if "; wv)" in ua:
         m = re.search(r"Chrome/([^\s]+)", ua)
-        return f"Android-WebView Chrome/{m.group(1)}" if m else "Android-WebView"
+        base = f"Android-WebView Chrome/{m.group(1)}" if m else "Android-WebView"
+        return f"{base} (XC)" if "XC;" in ua else base
     if "Chrome/" in ua:
         m = re.search(r"Chrome/([^\s]+)", ua)
         return f"Android Chrome/{m.group(1)}" if m else "Android-Chrome"
@@ -329,6 +475,11 @@ def _load_profile_id_from_db() -> str:
         saved = (db.get_setting(PROTOCOL_PROFILE_SETTING_KEY, DEFAULT_PROTOCOL_PROFILE_ID) or "").strip()
         if saved in PROTOCOL_PROFILES:
             return saved
+        if saved in LEGACY_PROFILE_ALIAS:
+            migrated = resolve_protocol_profile_id(saved)
+            _persist_profile_id_to_db(migrated)
+            logger.info("检测到旧版协议档案 [%s]，已自动升级迁移至 [%s]", saved, migrated)
+            return migrated
     except Exception:
         pass
     return DEFAULT_PROTOCOL_PROFILE_ID
@@ -351,15 +502,21 @@ def get_active_protocol_profile() -> Dict[str, Any]:
     profile = get_protocol_profile(_active_profile_id)
     env_ua = (os.getenv("XIAOCAN_USER_AGENT") or "").strip()
     env_tls = (os.getenv(TLS_IMPERSONATE_ENV) or "").strip().lower()
-    effective_ua = env_ua or profile["user_agent"]
-    effective_tls = env_tls or profile["transport_mode"]
+    env_ver = (os.getenv("XIAOCAN_APP_VERSION") or "").strip()
+    effective_ua = env_ua or str(profile["user_agent"])
+    effective_tls = env_tls or str(profile["transport_mode"])
+    effective_ver = env_ver or str(profile.get("app_version") or "3.22.2")
     return {
         "id": profile["id"],
         "label": profile["label"],
         "transport_mode": effective_tls,
+        "x_platform": str(profile.get("x_platform") or "Android"),
+        "appid": str(profile.get("appid") or "10"),
+        "app_version": effective_ver,
+        "include_x_version": bool(profile.get("include_x_version", True)),
         "user_agent": effective_ua,
         "ua_summary": _summarize_ua(effective_ua),
-        "env_locked": bool(env_ua or env_tls),
+        "env_locked": bool(env_ua or env_tls or env_ver),
     }
 
 
@@ -374,17 +531,16 @@ def set_active_protocol_profile(profile_id: str, persist: bool = True) -> Dict[s
     return get_active_protocol_profile()
 
 
-def _get_next_failover_profile_id(current_id: str) -> Optional[str]:
-    """按环形顺序挑选下一套合规备用 Profile，跳过当前正受阻档案"""
+def _get_failover_candidates(current_id: str) -> List[Dict[str, Any]]:
+    """按环形优先级返回其余正交备用协议档案列表"""
     profiles = list_protocol_profiles()
     if len(profiles) <= 1:
-        return None
+        return []
     ids = [p["id"] for p in profiles]
     if current_id not in ids:
-        return ids[0]
+        return profiles
     idx = ids.index(current_id)
-    next_id = ids[(idx + 1) % len(ids)]
-    return next_id if next_id != current_id else None
+    return [profiles[(idx + offset) % len(profiles)] for offset in range(1, len(profiles))]
 
 
 def _extract_html_title(text: str) -> str:
@@ -472,7 +628,7 @@ async def _wait_rpc_rate_limit(is_burst: bool = False):
     global _last_rpc_timestamp
     if is_burst:
         return
-    async with _RPC_RATE_LOCK:
+    async with _get_rpc_rate_lock():
         now = time_service.now_ts()
         elapsed = now - _last_rpc_timestamp
         min_interval = random.uniform(0.22, 0.38)
@@ -770,7 +926,7 @@ class XiaoCanClient:
             if status == "blocked" and detail is not None:
                 _raise_blocked_error(detail)
         else:
-            async with _RPC_SEMAPHORE:
+            async with _get_rpc_semaphore():
                 # 排队获取信号量后再次检查 WAF 冷却，防止并发同批请求在首个 403 后继续补刀
                 _raise_if_waf_cooldown()
                 current_prof = get_active_protocol_profile()
@@ -784,37 +940,67 @@ class XiaoCanClient:
                     if not can_failover:
                         _raise_blocked_error(detail)
 
-                    async with _waf_failover_lock:
+                    async with _get_waf_failover_lock():
+                        # 1. 若并发领头协程刚判定全环受阻并开启冷却，排在锁外的同行协程立刻退避中止，严禁二次补刀累加冷却
+                        _raise_if_waf_cooldown()
                         latest_prof = get_active_protocol_profile()
+                        # 2. 若同行协程刚刚已自愈切换至有效新档案，直接复用新档案重发 1 次
                         if latest_prof["id"] != current_prof["id"]:
-                            retry_prof = latest_prof
-                        else:
-                            next_id = _get_next_failover_profile_id(current_prof["id"])
-                            if not next_id:
-                                _raise_blocked_error(detail)
-                            retry_prof = get_protocol_profile(next_id)
-                            logger.warning(
-                                "RPC %s.%s 触发 %s，自动切换至兼容协议档案 [%s] 进行单次安全自愈重试",
+                            logger.info(
+                                "RPC %s.%s 复用并发同伴已自愈的协议档案 [%s] 直接重试",
                                 server_name,
                                 method_name,
-                                detail.get("reason_label"),
-                                retry_prof["id"],
+                                latest_prof["id"],
                             )
-
-                        status2, detail2, data2 = await _send_with_profile(retry_prof)
-                        if status2 == "ok":
-                            if retry_prof["id"] != latest_prof["id"]:
-                                set_active_protocol_profile(retry_prof["id"], persist=True)
-                                logger.info(
-                                    "协议自适应自愈成功: 已切换并持久化活跃协议档案 [%s] -> [%s]",
-                                    current_prof["id"],
-                                    retry_prof["id"],
-                                )
-                            data = data2
+                            st_peer, det_peer, data_peer = await _send_with_profile(latest_prof)
+                            if st_peer == "ok":
+                                data = data_peer
+                            else:
+                                final_detail = det_peer or detail
+                                final_detail["tried_profiles"] = [current_prof["id"], latest_prof["id"]]
+                                _raise_blocked_error(final_detail)
                         else:
-                            final_detail = detail2 or detail
-                            final_detail["tried_profiles"] = [current_prof["id"], retry_prof["id"]]
-                            _raise_blocked_error(final_detail)
+                            # 3. 成为唯一领头探测者，依次遍历剩余正交备用档案
+                            candidates = _get_failover_candidates(current_prof["id"])
+                            if not candidates:
+                                _raise_blocked_error(detail)
+
+                            tried_ids: List[str] = [current_prof["id"]]
+                            healed_data: Optional[Dict[str, Any]] = None
+                            last_detail: Dict[str, Any] = detail
+
+                            for cand in candidates:
+                                tried_ids.append(cand["id"])
+                                logger.warning(
+                                    "RPC %s.%s 触发 %s，自动切换正交协议档案 [%s] (%s / ver=%s) 进行自愈探测",
+                                    server_name,
+                                    method_name,
+                                    last_detail.get("reason_label"),
+                                    cand["id"],
+                                    cand.get("x_platform"),
+                                    cand.get("app_version"),
+                                )
+                                await asyncio.sleep(random.uniform(0.15, 0.30))
+                                st_cand, det_cand, data_cand = await _send_with_profile(cand)
+                                if st_cand == "ok":
+                                    set_active_protocol_profile(cand["id"], persist=True)
+                                    logger.info(
+                                        "协议自适应自愈成功: 已切换并持久化活跃协议档案 [%s] -> [%s]",
+                                        current_prof["id"],
+                                        cand["id"],
+                                    )
+                                    healed_data = data_cand
+                                    break
+                                last_detail = det_cand or last_detail
+                                # 若遭遇验证码挑战或 429 频控则立即停探保护账号
+                                if last_detail.get("reason_code") != "waf_stgw_rule":
+                                    break
+
+                            if healed_data is not None:
+                                data = healed_data
+                            else:
+                                last_detail["tried_profiles"] = tried_ids
+                                _raise_blocked_error(last_detail)
 
         # 3. 请求成功，重置 WAF 连续阻断计数
         record_waf_success()

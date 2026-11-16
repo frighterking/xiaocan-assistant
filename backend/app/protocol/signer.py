@@ -8,57 +8,121 @@ import json
 import os
 import time
 import uuid
-from typing import Optional, Dict, List
+from typing import Any, Optional, Dict, List
 from ..core import time_service
 
 
-DEFAULT_PROTOCOL_PROFILE_ID = "android_webview"
+DEFAULT_PROTOCOL_PROFILE_ID = "android_v3222_webview"
 
-# 已实测验证且兼容 App 网关 (X-Platform=Android, appid=10) 与腾讯云 STGW/WAF 的合规协议指纹档案
-# 严禁将 okhttp/* 与 Dalvik/* 等已知会触发 STGW 规则 403 的非标脚本 UA 列入自动候选池
-PROTOCOL_PROFILES: Dict[str, Dict[str, str]] = {
-    "android_webview": {
-        "id": "android_webview",
-        "label": "Android WebView 标准通道",
-        "transport_mode": "okhttp",
+# 旧版本档案 ID 兼容迁移映射（升级后自动平滑迁移至对齐 APK 3.22.2 的默认档案）
+LEGACY_PROFILE_ALIAS: Dict[str, str] = {
+    "android_webview": DEFAULT_PROTOCOL_PROFILE_ID,
+    "android_chrome131": DEFAULT_PROTOCOL_PROFILE_ID,
+    "wechat_app_compat": DEFAULT_PROTOCOL_PROFILE_ID,
+}
+
+# 基于官方最新 APK (com.realtech.xiaocan v3.22.2) 实测验证的多维正交协议档案池：
+# 覆盖「平台 (Android/mini)」「版本与 X-Version 策略」「UA 形态」「TLS 指纹」四个正交维度，
+# 严禁将 okhttp/* 或 Dalvik/* 等历史被封脚本 UA 列入候选池，并已去除非原生冗余字段 X-Model: Android Phone
+PROTOCOL_PROFILES: Dict[str, Dict[str, Any]] = {
+    "android_v3222_webview": {
+        "id": "android_v3222_webview",
+        "label": "Android APK 3.22.2 WebView 容器通道",
+        "transport_mode": "chrome131",
+        "x_platform": "Android",
+        "appid": "10",
+        "app_version": "3.22.2",
+        "include_x_version": True,
+        "include_x_app_sr": True,
+        "include_x_channel": False,
+        "x_model": "",
         "user_agent": (
             "Mozilla/5.0 (Linux; Android 14; 23116PN5BC Build/UKQ1.230804.001; wv) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0.6478.186 Mobile Safari/537.36"
+            "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0.6478.186 "
+            "Mobile Safari/537.36 XC;Android;3.22.2;"
         ),
+        "extra_headers": {},
     },
-    "android_chrome131": {
-        "id": "android_chrome131",
-        "label": "Android Chrome 131 浏览器通道",
+    "android_v3222_minimal": {
+        "id": "android_v3222_minimal",
+        "label": "Android 3.22.2 精简去冗余头通道 (无 X-Version)",
         "transport_mode": "chrome131",
+        "x_platform": "Android",
+        "appid": "10",
+        "app_version": "3.22.2",
+        "include_x_version": False,
+        "include_x_app_sr": False,
+        "include_x_channel": False,
+        "x_model": "",
         "user_agent": (
             "Mozilla/5.0 (Linux; Android 14; 23116PN5BC Build/UKQ1.230804.001) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
         ),
+        "extra_headers": {},
     },
-    "wechat_app_compat": {
-        "id": "wechat_app_compat",
-        "label": "WeChat WebView 兼容 App 通道",
+    "android_v3222_dart": {
+        "id": "android_v3222_dart",
+        "label": "Android APK 3.22.2 Flutter Dio 原生通道",
+        "transport_mode": "okhttp",
+        "x_platform": "Android",
+        "appid": "10",
+        "app_version": "3.22.2",
+        "include_x_version": True,
+        "include_x_app_sr": False,
+        "include_x_channel": False,
+        "x_model": "",
+        "user_agent": "Dart/3.5 (dart:io)",
+        "extra_headers": {},
+    },
+    "wechat_mini_compat": {
+        "id": "wechat_mini_compat",
+        "label": "微信兼容跨平台逃生通道 (X-Platform=mini, appid=10)",
         "transport_mode": "chrome131",
+        "x_platform": "mini",
+        "appid": "10",
+        "app_version": "3.20.6.67",
+        "include_x_version": True,
+        "include_x_app_sr": False,
+        "include_x_channel": False,
+        "x_model": "microsoft microsoft",
         "user_agent": (
             "Mozilla/5.0 (Linux; Android 14; 23116PN5BC Build/UKQ1.230804.001; wv) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.103 "
             "Mobile Safari/537.36 XWEB/1300255 MMWEBSDK/20241102 MicroMessenger/8.0.54.2760(0x28003639) "
             "WeChat/arm64 Weixin NetType/WIFI Language/zh_CN ABI/arm64"
         ),
+        "extra_headers": {
+            "xweb_xhr": "1",
+            "Sec-Fetch-Site": "cross-site",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
+            "Referer": "https://servicewechat.com/wx52ae177248081591/798/page-frame.html",
+        },
     },
 }
 
 
-def get_protocol_profile(profile_id: Optional[str] = None) -> Dict[str, str]:
-    """获取指定或默认的合规协议指纹档案（非法/未知 ID 自动回退至默认档案）"""
-    if profile_id and profile_id in PROTOCOL_PROFILES:
-        return dict(PROTOCOL_PROFILES[profile_id])
-    return dict(PROTOCOL_PROFILES[DEFAULT_PROTOCOL_PROFILE_ID])
+def resolve_protocol_profile_id(profile_id: Optional[str] = None) -> str:
+    """规范化协议档案 ID，自动将历史旧 ID 映射至新版默认档案"""
+    pid = str(profile_id or "").strip()
+    if pid in PROTOCOL_PROFILES:
+        return pid
+    if pid in LEGACY_PROFILE_ALIAS:
+        return LEGACY_PROFILE_ALIAS[pid]
+    return DEFAULT_PROTOCOL_PROFILE_ID
 
 
-def list_protocol_profiles() -> List[Dict[str, str]]:
+def get_protocol_profile(profile_id: Optional[str] = None) -> Dict[str, Any]:
+    """获取指定或默认的合规协议指纹档案（非法/旧版 ID 自动迁移回退）"""
+    resolved = resolve_protocol_profile_id(profile_id)
+    prof = dict(PROTOCOL_PROFILES[resolved])
+    prof["extra_headers"] = dict(prof.get("extra_headers") or {})
+    return prof
+
+
+def list_protocol_profiles() -> List[Dict[str, Any]]:
     """按优先级顺序列出所有自动自愈候选合规协议档案"""
-    return [dict(item) for item in PROTOCOL_PROFILES.values()]
+    return [get_protocol_profile(pid) for pid in PROTOCOL_PROFILES]
 
 
 def md5_hex(s: str) -> str:
@@ -139,25 +203,36 @@ def generate_headers(
             "UnifiedPCWindowsWechat(0xf254173b) XWEB/19027"
         )
     else:
-        # 全局默认采用移动独立 App 原生协议特征 (彻底突破大牌券、影音周卡等 50010 限制)
-        headers["X-Platform"] = "Android"
-        headers["appid"] = "10"
-        headers["X-App-Sr"] = "10"
-        headers["version"] = "3.21.1"
-        headers["X-Version"] = "3.21.1"
-        headers["x-channel"] = "xiaocan"
+        # 按多维正交档案装配 App 网关请求头（基于 APK 3.22.2 对齐并支持热自愈轮换）
+        prof = get_protocol_profile(profile_id)
+        env_ver = (os.getenv("XIAOCAN_APP_VERSION") or "").strip()
+        eff_ver = env_ver or str(prof.get("app_version") or "3.22.2")
+
+        headers["X-Platform"] = str(prof.get("x_platform") or "Android")
+        headers["appid"] = str(prof.get("appid") or "10")
+        if prof.get("include_x_app_sr", True):
+            headers["X-App-Sr"] = str(prof.get("appid") or "10")
+        headers["version"] = eff_ver
+        if prof.get("include_x_version", True):
+            headers["X-Version"] = eff_ver
+        if prof.get("include_x_channel", False):
+            headers["x-channel"] = "xiaocan"
         headers["X-CityCode"] = str(city_code)
-        headers["X-Model"] = "Android Phone"
+        if prof.get("x_model"):
+            headers["X-Model"] = str(prof["x_model"])
+        for extra_k, extra_v in (prof.get("extra_headers") or {}).items():
+            headers[extra_k] = str(extra_v)
+
         # 腾讯云 WAF (stgw) 会直接 403 拦截 okhttp/x.x 与 Dalvik/x.x 类非浏览器 UA
-        # 优先级: 显式传入 user_agent > 显式指定 profile_id > 环境变量 XIAOCAN_USER_AGENT > 默认合规档案
+        # 优先级: 显式传入 user_agent > 环境变量 XIAOCAN_USER_AGENT > 档案对应合规 UA
         explicit_ua = str(user_agent).strip() if user_agent else ""
+        env_ua = (os.getenv("XIAOCAN_USER_AGENT") or "").strip()
         if explicit_ua:
             headers["User-Agent"] = explicit_ua
-        elif profile_id and profile_id in PROTOCOL_PROFILES:
-            headers["User-Agent"] = get_protocol_profile(profile_id)["user_agent"]
+        elif env_ua:
+            headers["User-Agent"] = env_ua
         else:
-            env_ua = (os.getenv("XIAOCAN_USER_AGENT") or "").strip()
-            headers["User-Agent"] = env_ua or get_protocol_profile()["user_agent"]
+            headers["User-Agent"] = str(prof["user_agent"])
 
     if user_id:
         headers["x-Vayne"] = str(user_id)

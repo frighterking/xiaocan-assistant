@@ -75,6 +75,7 @@ export const TaskIcon: React.FC<TaskIconProps> = ({ taskId, className = 'w-9 h-9
       return (
         <svg viewBox="0 0 48 48" aria-hidden="true" className={className} style={style}><circle cx="24" cy="24" r="18" fill="#8c8c8c"/><path d="M17 17l14 14M31 17l-14 14" stroke="#fff" strokeWidth="3.2" strokeLinecap="round"/></svg>
       );
+    case 'dual_rebate_scan':
     case 'dual_rebate_monitor':
       return (
         <svg viewBox="0 0 48 48" aria-hidden="true" className={className} style={style}>

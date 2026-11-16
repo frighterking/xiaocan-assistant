@@ -126,11 +126,18 @@ export const api = {
   // 店铺与附近霸王餐 (支持经纬度、平台、搜索过滤、触底流式分页)
   getStores: (params?: { city_code?: number; longitude?: string; latitude?: string; account_key?: string; keyword?: string; platform?: string; condition?: string; rebate_type?: string; sort_by?: string; limit?: number; offset?: number; page_pv_id?: string }, signal?: AbortSignal) => 
     client.get<{ ok: boolean; stores: StoreItem[]; total: number; raw_total?: number; source?: string; has_more?: boolean; next_offset?: number; page_pv_id?: string; keyword?: string; location_required?: boolean; code?: string; message?: string; error?: string }>('/store/list', { params, signal }).then(r => r.data),
-  scanDualRebateStores: (params?: { city_code?: number; longitude?: string; latitude?: string; account_key?: string; platform?: string; keyword?: string; max_stores?: number; delay_min?: number; delay_max?: number; page_delay?: number }) =>
+  scanDualRebateStores: (params?: { city_code?: number; longitude?: string; latitude?: string; account_key?: string; platform?: string; keyword?: string; max_stores?: number; max_fixed_stores?: number; max_percent_stores?: number; delay_min?: number; delay_max?: number; page_delay?: number }) =>
     client.get<{
       ok: boolean;
       total_scanned_promotions: number;
       total_scanned_stores: number;
+      fixed_scanned_stores?: number;
+      percent_scanned_stores?: number;
+      max_fixed_stores?: number;
+      max_percent_stores?: number;
+      max_feed_distance?: number;
+      max_feed_store_name?: string;
+      last_shangjin_stores?: string[];
       dual_rebate_count: number;
       returned_count?: number;
       max_stores?: number;

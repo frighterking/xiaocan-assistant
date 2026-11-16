@@ -39,6 +39,7 @@ import {
   IconGift,
   IconFastForward,
   IconChevronRight,
+  IconChevronDown,
   IconPlus,
   IconCopy,
   IconMapPin,
@@ -592,10 +593,24 @@ export const StoreSniping: React.FC = () => {
   const [dualScanDone, setDualScanDone] = useState(false);
   const [dualTotalPromos, setDualTotalPromos] = useState(0);
   const [dualTotalStores, setDualTotalStores] = useState(0);
+  const [dualFixedScanned, setDualFixedScanned] = useState(0);
+  const [dualPercentScanned, setDualPercentScanned] = useState(0);
   const [dualSearchKeyword, setDualSearchKeyword] = useState('');
-  const [dualMaxStores, setDualMaxStores] = useState<number>(() => {
+  const [dualMaxFixed, setDualMaxFixed] = useState<number>(() => {
     try {
-      const cached = localStorage.getItem('xiaocan_dual_max_stores');
+      const cached = localStorage.getItem('xiaocan_dual_max_fixed');
+      if (cached) {
+        const parsed = parseInt(cached, 10);
+        if (!isNaN(parsed) && parsed > 0) return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return 300;
+  });
+  const [dualMaxPercent, setDualMaxPercent] = useState<number>(() => {
+    try {
+      const cached = localStorage.getItem('xiaocan_dual_max_percent');
       if (cached) {
         const parsed = parseInt(cached, 10);
         if (!isNaN(parsed) && parsed > 0) return parsed;
@@ -840,7 +855,7 @@ export const StoreSniping: React.FC = () => {
     }
   }, { scope: mainContainerRef, dependencies: [platformFilter, rebateTypeFilter, conditionFilter, sortBy] });
 
-  const handleTriggerDualScan = async (customMax?: number, customKw?: string) => {
+  const handleTriggerDualScan = async (customFixed?: number, customPercent?: number, customKw?: string) => {
     if (accounts.length === 0) {
       Toast.warning('请先绑定或选择账号');
       return;
@@ -851,7 +866,8 @@ export const StoreSniping: React.FC = () => {
     }
     setDualScanLoading(true);
     const targetKw = customKw !== undefined ? customKw : dualSearchKeyword.trim();
-    const targetMax = customMax !== undefined ? customMax : dualMaxStores;
+    const targetFixed = customFixed !== undefined ? customFixed : dualMaxFixed;
+    const targetPercent = customPercent !== undefined ? customPercent : dualMaxPercent;
     try {
       const res = await api.scanDualRebateStores({
         city_code: activeLocation.cityCode,
@@ -860,7 +876,9 @@ export const StoreSniping: React.FC = () => {
         account_key: currentAccountKey,
         platform: 'all',
         keyword: targetKw || undefined,
-        max_stores: targetMax,
+        max_stores: Math.max(targetFixed, targetPercent),
+        max_fixed_stores: targetFixed,
+        max_percent_stores: targetPercent,
         delay_min: Math.min(dualDelayMin, dualDelayMax),
         delay_max: Math.max(dualDelayMin, dualDelayMax)
       });
@@ -873,6 +891,8 @@ export const StoreSniping: React.FC = () => {
         setDualStores(sorted);
         setDualTotalPromos(res.total_scanned_promotions || 0);
         setDualTotalStores(res.total_scanned_stores || 0);
+        setDualFixedScanned(res.fixed_scanned_stores || 0);
+        setDualPercentScanned(res.percent_scanned_stores || 0);
         setDualScanDone(true);
         Toast.success(res.message || `扫描完成：已筛选出 ${sorted.length} 家同店多活动/双福利商户`);
       } else {
@@ -885,17 +905,87 @@ export const StoreSniping: React.FC = () => {
     }
   };
 
-  const handleDualMaxStoresChange = useCallback((val: number) => {
-    setDualMaxStores(val);
+  const handleDualMaxFixedChange = useCallback((val: number) => {
+    setDualMaxFixed(val);
     try {
-      localStorage.setItem('xiaocan_dual_max_stores', String(val));
+      localStorage.setItem('xiaocan_dual_max_fixed', String(val));
     } catch {
       // ignore
     }
     if (dualScanDone || dualStores.length > 0) {
-      handleTriggerDualScan(val);
+      handleTriggerDualScan(val, dualMaxPercent);
     }
-  }, [dualScanDone, dualStores.length, handleTriggerDualScan]);
+  }, [dualScanDone, dualStores.length, dualMaxPercent, handleTriggerDualScan]);
+
+  const handleDualMaxPercentChange = useCallback((val: number) => {
+    setDualMaxPercent(val);
+    try {
+      localStorage.setItem('xiaocan_dual_max_percent', String(val));
+    } catch {
+      // ignore
+    }
+    if (dualScanDone || dualStores.length > 0) {
+      handleTriggerDualScan(dualMaxFixed, val);
+    }
+  }, [dualScanDone, dualStores.length, dualMaxFixed, handleTriggerDualScan]);
+
+  const renderDualRangeSelector = () => (
+    <Popover
+      trigger="click"
+      position="bottomLeft"
+      showArrow
+      content={
+        <div className="p-3 w-[250px] flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-2">
+            <Text className="text-xs font-medium text-semi-color-text-1 whitespace-nowrap">实付满返 (Feed)</Text>
+            <Select
+              size="small"
+              value={dualMaxFixed}
+              onChange={(v) => handleDualMaxFixedChange(Number(v))}
+              style={{ width: 112 }}
+            >
+              <Select.Option value={100}>100 家</Select.Option>
+              <Select.Option value={200}>200 家</Select.Option>
+              <Select.Option value={300}>300 家</Select.Option>
+              <Select.Option value={500}>500 家</Select.Option>
+              <Select.Option value={800}>800 家</Select.Option>
+            </Select>
+          </div>
+          <div className="flex items-center justify-between gap-2">
+            <Text className="text-xs font-medium text-semi-color-text-1 whitespace-nowrap">按比例返 (赏金)</Text>
+            <Select
+              size="small"
+              value={dualMaxPercent}
+              onChange={(v) => handleDualMaxPercentChange(Number(v))}
+              style={{ width: 112 }}
+            >
+              <Select.Option value={50}>50 家</Select.Option>
+              <Select.Option value={100}>100 家</Select.Option>
+              <Select.Option value={150}>150 家</Select.Option>
+              <Select.Option value={200}>200 家</Select.Option>
+              <Select.Option value={300}>300 家</Select.Option>
+              <Select.Option value={500}>500 家</Select.Option>
+            </Select>
+          </div>
+          <Text type="tertiary" className="text-[11px] leading-snug">
+            两路通道各自独立计数达标即止，默认各 300 家。
+          </Text>
+        </div>
+      }
+    >
+      <Button
+        size="default"
+        theme="light"
+        type="tertiary"
+        className="!font-normal !border !border-semi-color-border !bg-semi-color-bg-0"
+      >
+        <span className="inline-flex items-center gap-1.5 text-sm">
+          <span>满返 {dualMaxFixed} / 比例 {dualMaxPercent}</span>
+          <IconChevronDown size="small" className="text-semi-color-text-2" />
+        </span>
+      </Button>
+    </Popover>
+  );
 
   const lastStoresQuerySignatureRef = useRef<string>('');
   const inFlightStoresRef = useRef<boolean>(false);
@@ -2638,8 +2728,6 @@ export const StoreSniping: React.FC = () => {
           overflow-y: auto !important;
           scrollbar-gutter: stable;
           contain: content;
-          will-change: transform;
-          transform: translateZ(0);
           -webkit-overflow-scrolling: touch;
         }
         .appointment-table-container .semi-table-body,
@@ -2649,8 +2737,6 @@ export const StoreSniping: React.FC = () => {
           max-height: var(--table-scroll-y) !important;
           overflow-y: auto !important;
           contain: content;
-          will-change: transform;
-          transform: translateZ(0);
           -webkit-overflow-scrolling: touch;
         }
         /* 操作列紧凑内边距与不换行，杜绝多按钮撑开单元格导致表格产生横向滚动条 */
@@ -2969,19 +3055,7 @@ export const StoreSniping: React.FC = () => {
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Text type="secondary" className="text-sm font-medium whitespace-nowrap">商家范围:</Text>
-                  <Select
-                    size="default"
-                    value={dualMaxStores}
-                    onChange={(v) => handleDualMaxStoresChange(Number(v))}
-                    style={{ width: 105 }}
-                  >
-                    <Select.Option value={100}>100 家</Select.Option>
-                    <Select.Option value={300}>300 家</Select.Option>
-                    <Select.Option value={500}>500 家</Select.Option>
-                    <Select.Option value={600}>600 家</Select.Option>
-                    <Select.Option value={700}>700 家</Select.Option>
-                    <Select.Option value={800}>800 家</Select.Option>
-                  </Select>
+                  {renderDualRangeSelector()}
                 </div>
                 <div className="flex items-center gap-2">
                   <Input
@@ -3102,7 +3176,7 @@ export const StoreSniping: React.FC = () => {
         </div>
 
         {/* 表格内容区域 (带 GSAP 渐入动画容器，常驻 DOM 消除切 Tab 时的 DOM 销毁与重建开销) */}
-        <div ref={tabWrapperRef} className="tab-content-anim flex-1 min-h-0 flex flex-col relative overflow-hidden will-change-[opacity]">
+        <div ref={tabWrapperRef} className="tab-content-anim flex-1 min-h-0 flex flex-col relative overflow-hidden">
           {/* 附近店铺分栏 */}
           {visitedTabs.has('stores') && (
             <div
@@ -3346,19 +3420,7 @@ export const StoreSniping: React.FC = () => {
                       </div>
                       <div className="flex items-center gap-1.5">
                         <Text type="secondary" className="text-sm">商家获取范围:</Text>
-                        <Select
-                          value={dualMaxStores}
-                          onChange={(v) => handleDualMaxStoresChange(Number(v))}
-                          style={{ width: 110 }}
-                          size="default"
-                        >
-                          <Select.Option value={100}>100 家</Select.Option>
-                          <Select.Option value={300}>300 家</Select.Option>
-                          <Select.Option value={500}>500 家</Select.Option>
-                          <Select.Option value={600}>600 家</Select.Option>
-                          <Select.Option value={700}>700 家</Select.Option>
-                          <Select.Option value={800}>800 家</Select.Option>
-                        </Select>
+                        {renderDualRangeSelector()}
                       </div>
                     </div>
                     <Button
@@ -3380,9 +3442,9 @@ export const StoreSniping: React.FC = () => {
                       <Tag color="amber" size="small">美团外卖专享</Tag>
                       <Tag color="blue" size="small">距离最近</Tag>
                       <span className="text-semi-color-text-1">
-                        共检索 {dualTotalStores} 家商户、{dualTotalPromos} 个活动，筛选出 {dualStores.length} 家双返利店铺
+                        共检索 {dualTotalStores} 家商户（满返 {dualFixedScanned} / 比例 {dualPercentScanned}）、{dualTotalPromos} 个活动，筛选出 {dualStores.length} 家双返利店铺
                         {dualStores.length !== displayedDualStores.length && ` · 匹配 ${displayedDualStores.length} 家`}
-                        {dualMaxStores > 0 && ` · 设定范围 ${dualMaxStores} 家`}
+                        {` · 设定范围 满返 ${dualMaxFixed} / 比例 ${dualMaxPercent} 家`}
                       </span>
                     </div>
                     <Button

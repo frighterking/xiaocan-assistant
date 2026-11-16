@@ -238,6 +238,21 @@ body {
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
+/* 覆盖 Semi Design 半透明文字 Token 为不透明等效 RGB，恢复 Windows Chrome 次像素抗锯齿 (ClearType) */
+body,
+body[theme-mode="dark"] .semi-always-light {
+  --semi-color-text-1: rgb(73, 76, 79);
+  --semi-color-text-2: rgb(114, 116, 119);
+  --semi-color-text-3: rgb(176, 177, 178);
+}
+
+body[theme-mode="dark"],
+body .semi-always-dark {
+  --semi-color-text-1: rgb(206, 206, 207);
+  --semi-color-text-2: rgb(163, 164, 166);
+  --semi-color-text-3: rgb(110, 111, 114);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -328,10 +343,8 @@ html, body, #root {
   flex-shrink: 0;
 }
 
-/* GSAP 卡片预留平滑过渡与性能加速 */
+/* GSAP 卡片容器：不常驻开启 will-change/backface-visibility，避免禁用次像素抗锯齿导致文字发虚 */
 .gsap-card-item {
-  will-change: transform, opacity;
-  backface-visibility: hidden;
 }
 
 /* Semi Dropdown 下拉选项宽度自适应：解除 280px 硬编码限制，支持全宽展开与长地址平铺 */

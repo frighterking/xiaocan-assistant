@@ -1430,7 +1430,7 @@ def delete_order(order_id: int) -> bool:
 def get_order_stats(account_key: Optional[str] = None) -> Dict[str, Any]:
     auto_cancel_expired_orders(account_key=account_key)
     with get_conn() as conn:
-        sql = "SELECT status, order_money, rebate_money FROM orders WHERE 1=1"
+        sql = "SELECT status, order_money, rebate_money, redpack_reward_num FROM orders WHERE 1=1"
         params: Dict[str, Any] = {}
         if account_key:
             sql += " AND account_key = :account_key"
@@ -1440,9 +1440,15 @@ def get_order_stats(account_key: Optional[str] = None) -> Dict[str, Any]:
     total_orders = len([r for r in rows if r["status"] != "cancelled"])
     completed_orders = sum(1 for r in rows if r["status"] == "completed")
     pending_orders = sum(1 for r in rows if r["status"] in ("pending", "auditing"))
-    total_rebate = sum(r["rebate_money"] for r in rows if r["status"] == "completed")
-    pending_rebate = sum(r["rebate_money"] for r in rows if r["status"] in ("pending", "auditing"))
-    total_spent = sum(r["order_money"] for r in rows if r["status"] == "completed")
+    total_rebate = sum(
+        float(r["rebate_money"] or 0.0) + float(r["redpack_reward_num"] or 0.0)
+        for r in rows if r["status"] == "completed"
+    )
+    pending_rebate = sum(
+        float(r["rebate_money"] or 0.0) + float(r["redpack_reward_num"] or 0.0)
+        for r in rows if r["status"] in ("pending", "auditing")
+    )
+    total_spent = sum(float(r["order_money"] or 0.0) for r in rows if r["status"] == "completed")
 
     return {
         "total_orders": total_orders,
@@ -1457,7 +1463,7 @@ def get_order_stats(account_key: Optional[str] = None) -> Dict[str, Any]:
 def get_dashboard_chart_data(account_key: Optional[str] = None) -> Dict[str, Any]:
     auto_cancel_expired_orders(account_key=account_key)
     with get_conn() as conn:
-        sql = "SELECT status, platform, order_money, rebate_money, created_at, order_time FROM orders WHERE 1=1"
+        sql = "SELECT status, platform, order_money, rebate_money, redpack_reward_num, created_at, order_time FROM orders WHERE 1=1"
         params: Dict[str, Any] = {}
         if account_key:
             sql += " AND account_key = :account_key"
@@ -1506,7 +1512,7 @@ def get_dashboard_chart_data(account_key: Optional[str] = None) -> Dict[str, Any
             plat = "jingdong"
         elif plat == "taobao":
             plat = "eleme"
-        rebate = float(r.get("rebate_money") or 0.0)
+        rebate = float(r.get("rebate_money") or 0.0) + float(r.get("redpack_reward_num") or 0.0)
         spent = float(r.get("order_money") or 0.0)
 
         if st in status_counts:

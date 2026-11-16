@@ -320,7 +320,7 @@ async def execute_grab_for_appointment(apt: Dict[str, Any], account: Dict[str, A
                 if is_percent_order:
                     raw_r = float(res.get("user_ratio") or res.get("ratio") or 0)
                     if raw_r > 0:
-                        ratio_val = round(raw_r / 100.0 if raw_r >= 100 else raw_r, 1)
+                        ratio_val = round(raw_r / 100.0, 1)
                     else:
                         m_ratio = re.search(r"(\d+(?:\.\d+)?)\s*%", rebate_desc_str)
                         if m_ratio:

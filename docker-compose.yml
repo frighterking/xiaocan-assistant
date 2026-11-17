@@ -10,7 +10,7 @@ services:
     ports:
       - "8690:8690"
     volumes:
-      - ./data:/app/backend/data
+      - xiaocan-data:/app/backend/data
     environment:
       - TZ=Asia/Shanghai
       - XIAOCAN_RELOAD=0
@@ -20,3 +20,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  xiaocan-data:
